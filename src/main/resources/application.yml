@@ -1,0 +1,50 @@
+spring:
+  application:
+    name: multi-agent-orchestrator
+  threads:
+    virtual:
+      enabled: true
+  ai:
+    # --- OpenAI config (used when orchestrator.ai.provider=openai) ---
+    openai:
+      api-key: ${OPENAI_API_KEY:sk-placeholder}
+      chat:
+        options:
+          model: gpt-4o
+          temperature: 0.2
+
+    # --- Ollama config (used when orchestrator.ai.provider=ollama) ---
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${OLLAMA_MODEL:llama3.1}
+          temperature: 0.2
+
+    # --- Anthropic config (used when orchestrator.ai.provider=anthropic) ---
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:placeholder}
+      chat:
+        options:
+          model: ${ANTHROPIC_MODEL:claude-sonnet-4-20250514}
+          temperature: 0.2
+
+orchestrator:
+  # Switch AI provider: openai | ollama | anthropic
+  ai:
+   provider: ${AI_PROVIDER:ollama}
+  max-concurrent-agents: 50
+  task-timeout-seconds: 420
+  blackboard-ttl-minutes: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+server:
+  port: 8080
