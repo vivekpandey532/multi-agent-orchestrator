@@ -9,5 +9,6 @@ public enum AgentRole {
     DESIGNER,
     RESEARCHER,
     CODER,
-    REVIEWER
+    REVIEWER,
+    TESTER
 }

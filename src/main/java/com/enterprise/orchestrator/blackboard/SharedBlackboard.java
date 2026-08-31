@@ -1,5 +1,6 @@
 package com.enterprise.orchestrator.blackboard;
 
+import com.enterprise.orchestrator.model.OrchestrationContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -29,10 +30,19 @@ public class SharedBlackboard {
         return Optional.ofNullable(sessions.getOrDefault(sessionId, new ConcurrentHashMap<>()).get(key));
     }
 
+    public Optional<OrchestrationContext> getContext(String sessionId) {
+        Object value = sessions.getOrDefault(sessionId, new ConcurrentHashMap<>()).get("orchestration_context");
+        return value instanceof OrchestrationContext ctx ? Optional.of(ctx) : Optional.empty();
+    }
+
     /** Write a single key-value pair into the session-scoped blackboard. */
     public void put(String sessionId, String key, Object value) {
         sessions.computeIfAbsent(sessionId, s -> new ConcurrentHashMap<>()).put(key, value);
         log.debug("Blackboard [{}] updated: {} = {}", sessionId, key, value);
+    }
+
+    public void putContext(String sessionId, OrchestrationContext context) {
+        put(sessionId, "orchestration_context", context);
     }
 
     /** Merge a map of entries into the session-scoped blackboard. */

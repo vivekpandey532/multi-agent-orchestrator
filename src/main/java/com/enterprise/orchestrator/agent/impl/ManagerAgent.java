@@ -11,6 +11,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * The Manager agent sits at the top of the hierarchy. It receives the raw
@@ -25,14 +26,12 @@ public class ManagerAgent implements BaseAgent {
     private static final Logger log = LoggerFactory.getLogger(ManagerAgent.class);
 
     private static final String SYSTEM_PROMPT = """
-            You are a project manager AI. Given a user request, decompose it into
-            concrete sub-tasks. Output ONLY a newline-separated list where each line
-            follows the format:
-            
-            ROLE: task description
-            
-            Available roles: HISTORY, DESIGNER, RESEARCHER, CODER, REVIEWER.
-            Choose the most appropriate role for each sub-task. Be concise.
+            You are the product requirements lead for the requested solution.
+            Produce only the scope and requirements for the requested feature. Do not
+            produce an execution plan or agent routing list. State the business goal,
+            required behavior, and any explicit constraints. If no external research is
+            needed, say so explicitly. Keep the output concise and focused on the
+            original request only.
             """;
 
     private final ChatClient chatClient;
@@ -54,14 +53,24 @@ public class ManagerAgent implements BaseAgent {
 
     @Override
     public HandoffResult execute(Task task) {
-        log.info("Manager decomposing request: {}", task.id());
-
-        String decomposition = chatClient.prompt()
-                .user(task.description())
+        String response = chatClient.prompt()
+                .user(buildPrompt(task))
                 .call()
                 .content();
 
-        log.info("Manager produced plan:\n{}", decomposition);
-        return HandoffResult.terminal(AgentRole.MANAGER, decomposition, task.context());
+        log.info(response == null ? "" : response);
+        return HandoffResult.terminal(AgentRole.MANAGER, response, task.context());
+    }
+
+    private String buildPrompt(Task task) {
+        Map<String, Object> context = task.context() == null ? Map.of() : task.context();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Original Request\n").append(context.getOrDefault("originalUserRequest", task.description())).append("\n\n");
+        sb.append("Context\n").append(context.getOrDefault("context", Map.of())).append("\n\n");
+        sb.append("Technology Constraints\n").append(context.getOrDefault("technologyConstraints", "Use the declared stack from the original request")).append("\n\n");
+        sb.append("Previous Relevant Outputs\n").append(context.getOrDefault("previousAgentOutputs", Map.of())).append("\n\n");
+        sb.append("Current Task\n").append(task.description()).append("\n\n");
+        sb.append("Expected Output\nReturn only the requirements and scope for the feature, including constraints and whether external research is required. Do not produce an execution plan or agent routing list.");
+        return sb.toString();
     }
 }

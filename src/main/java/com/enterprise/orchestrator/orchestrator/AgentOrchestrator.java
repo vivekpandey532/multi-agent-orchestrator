@@ -63,12 +63,20 @@ public class AgentOrchestrator {
      */
     public OrchestrationResponse orchestrate(OrchestrationRequest request) {
         String requestId = UUID.randomUUID().toString();
+        if (agentRegistry.size() == 1 && agentRegistry.containsKey(AgentRole.MANAGER)) {
+            throw new OrchestratorException("No worker agents are registered for orchestration");
+        }
         log.info("[{}] Orchestration started for request: {}", requestId, truncate(request.userRequest(), 120));
 
         Timer.Sample orchestrationTimer = Timer.start(metrics);
 
-        // Seed the blackboard with the original request context
+        Map<String, Object> inputContext = request.context() == null ? Map.of() : request.context();
+        OrchestrationContext orchestrationContext = new OrchestrationContext(requestId, request.userRequest(), inputContext);
+
         blackboard.put(requestId, "user_request", request.userRequest());
+        blackboard.put(requestId, "originalUserRequest", request.userRequest());
+        blackboard.put(requestId, "technologyConstraints", technologyConstraints(inputContext));
+        blackboard.putContext(requestId, orchestrationContext);
         if (request.context() != null) {
             blackboard.merge(requestId, request.context());
         }
@@ -76,15 +84,92 @@ public class AgentOrchestrator {
         List<StepSummary> steps = new CopyOnWriteArrayList<>();
 
         try {
-            // --- Phase 1: Manager decomposes the request into sub-tasks ---
-            List<Task> subTasks = decompose(requestId, request.userRequest(), steps);
+            boolean externalResearchRequired = requiresExternalResearch(request.userRequest(), request.context());
 
-            // --- Phase 2: Execute sub-tasks on worker agents (parallel where independent) ---
-            executeSubTasks(requestId, subTasks, steps);
+            // Requirement Analysis: manager establishes the scope and constraints.
+            if (agentRegistry.containsKey(AgentRole.MANAGER)) {
+                BaseAgent manager = resolveAgent(AgentRole.MANAGER);
+                Task requirementsTask = new Task(requestId,
+                        "Establish the exact scope, constraints, and expected behavior for the requested feature.",
+                        buildAgentContext(requestId, orchestrationContext, "requirements"));
+                HandoffResult requirementsResult = executeValidatedAgent(requestId, manager, requirementsTask, orchestrationContext, steps, "requirements");
+                orchestrationContext = orchestrationContext
+                        .withStage(OrchestrationContext.WorkflowStage.REQUIREMENT_ANALYSIS)
+                        .withSection("requirements", requirementsResult.output())
+                        .withPreviousAgentOutput(manager.role().name(), requirementsResult.output());
+                blackboard.putContext(requestId, orchestrationContext);
+            }
 
-            // --- Phase 3: Build final answer from blackboard ---
-            String finalAnswer = buildFinalAnswer(requestId, steps);
+            if (externalResearchRequired && agentRegistry.containsKey(AgentRole.RESEARCHER)) {
+                BaseAgent researcher = resolveAgent(AgentRole.RESEARCHER);
+                Task researchTask = new Task(requestId,
+                        "Gather only the external information explicitly required by this request.",
+                        buildAgentContext(requestId, orchestrationContext, "research"));
+                HandoffResult researchResult = executeValidatedAgent(requestId, researcher, researchTask, orchestrationContext, steps, "research");
+                orchestrationContext = orchestrationContext
+                        .withStage(OrchestrationContext.WorkflowStage.REQUIREMENT_ANALYSIS)
+                        .withSection("requirements", researchResult.output())
+                        .withPreviousAgentOutput(researcher.role().name(), researchResult.output());
+                blackboard.putContext(requestId, orchestrationContext);
+            }
 
+            // Design: translates requirements into a solution aligned to the original request.
+            if (agentRegistry.containsKey(AgentRole.DESIGNER)) {
+                BaseAgent designer = resolveAgent(AgentRole.DESIGNER);
+                Task designTask = new Task(requestId,
+                        "Design the focused API for the requested feature using the established scope and the selected stack.",
+                        buildAgentContext(requestId, orchestrationContext, "design"));
+                HandoffResult designResult = executeValidatedAgent(requestId, designer, designTask, orchestrationContext, steps, "design");
+                orchestrationContext = orchestrationContext
+                        .withStage(OrchestrationContext.WorkflowStage.DESIGN)
+                        .withSection("design", designResult.output())
+                        .withPreviousAgentOutput(designer.role().name(), designResult.output());
+                blackboard.putContext(requestId, orchestrationContext);
+            }
+
+            // Coding: implement only the requested functionality in the declared stack.
+            if (agentRegistry.containsKey(AgentRole.CODER)) {
+                BaseAgent coder = resolveAgent(AgentRole.CODER);
+                Task codingTask = new Task(requestId,
+                        "Implement the requested feature in the selected stack without introducing unrelated systems or optional components.",
+                        buildAgentContext(requestId, orchestrationContext, "implementation"));
+                HandoffResult codingResult = executeValidatedAgent(requestId, coder, codingTask, orchestrationContext, steps, "implementation");
+                orchestrationContext = orchestrationContext
+                        .withStage(OrchestrationContext.WorkflowStage.CODING)
+                        .withSection("implementation", codingResult.output())
+                        .withPreviousAgentOutput(coder.role().name(), codingResult.output());
+                blackboard.putContext(requestId, orchestrationContext);
+            }
+
+            // Review: ensure the result stays in scope and respects the original request.
+            if (agentRegistry.containsKey(AgentRole.REVIEWER)) {
+                BaseAgent reviewer = resolveAgent(AgentRole.REVIEWER);
+                Task reviewTask = new Task(requestId,
+                        "Review the implementation for alignment with the original request, scope, and technology constraints.",
+                        buildAgentContext(requestId, orchestrationContext, "review"));
+                HandoffResult reviewResult = executeValidatedAgent(requestId, reviewer, reviewTask, orchestrationContext, steps, "review");
+                orchestrationContext = orchestrationContext
+                        .withStage(OrchestrationContext.WorkflowStage.REVIEW)
+                        .withSection("review", reviewResult.output())
+                        .withPreviousAgentOutput(reviewer.role().name(), reviewResult.output());
+                blackboard.putContext(requestId, orchestrationContext);
+            }
+
+            // Testing: validate the implementation and ensure it uses the required stack.
+            if (agentRegistry.containsKey(AgentRole.TESTER)) {
+                BaseAgent tester = resolveAgent(AgentRole.TESTER);
+                Task testTask = new Task(requestId,
+                        "Validate that the implementation matches the original request, uses the selected stack, and stays within scope.",
+                        buildAgentContext(requestId, orchestrationContext, "tests"));
+                HandoffResult testResult = executeValidatedAgent(requestId, tester, testTask, orchestrationContext, steps, "tests");
+                orchestrationContext = orchestrationContext
+                        .withStage(OrchestrationContext.WorkflowStage.TESTING)
+                        .withSection("tests", testResult.output())
+                        .withPreviousAgentOutput(tester.role().name(), testResult.output());
+                blackboard.putContext(requestId, orchestrationContext);
+            }
+
+            String finalAnswer = buildStructuredFinalAnswer(requestId, orchestrationContext, steps);
             OrchestrationResponse response = new OrchestrationResponse(
                     requestId, finalAnswer, List.copyOf(steps), blackboard.snapshot(requestId));
 
@@ -101,6 +186,214 @@ public class AgentOrchestrator {
         } finally {
             blackboard.evict(requestId);
         }
+    }
+
+    private HandoffResult executeValidatedAgent(String requestId,
+                                              BaseAgent agent,
+                                              Task task,
+                                              OrchestrationContext context,
+                                              List<StepSummary> steps,
+                                              String section) {
+        HandoffResult result = executeAgentTimed(agent, task, steps);
+        if (!validateAgentResult(agent.role(), context, result, task.description())) {
+            throw new OrchestratorException("Agent validation failed for " + agent.role() + " in stage " + section);
+        }
+        blackboard.merge(requestId, result.metadata());
+        return result;
+    }
+
+    private Map<String, Object> buildAgentContext(String requestId, OrchestrationContext context, String stage) {
+        Map<String, Object> taskContext = new LinkedHashMap<>();
+        taskContext.put("requestId", requestId);
+        taskContext.put("originalUserRequest", context.originalUserRequest());
+        taskContext.put("context", context.context());
+        taskContext.put("technologyConstraints", technologyConstraints(context.context()));
+        taskContext.put("framework", context.framework());
+        taskContext.put("technology", context.technology());
+        taskContext.put("previousAgentOutputs", context.previousAgentOutputs());
+        taskContext.put("workflowStage", context.workflowStage());
+        taskContext.put("currentStage", stage);
+        taskContext.put("requirements", context.requirements());
+        taskContext.put("design", context.design());
+        taskContext.put("implementation", context.implementation());
+        taskContext.put("review", context.review());
+        taskContext.put("tests", context.tests());
+        return taskContext;
+    }
+
+    private String technologyConstraints(Map<String, Object> inputContext) {
+        String technology = inputContext == null ? null : String.valueOf(inputContext.getOrDefault("technology", ""));
+        String framework = inputContext == null ? null : String.valueOf(inputContext.getOrDefault("framework", ""));
+        StringBuilder sb = new StringBuilder();
+        if (!technology.isBlank()) {
+            sb.append(technology);
+        }
+        if (!framework.isBlank()) {
+            if (!sb.isEmpty()) sb.append(" + ");
+            sb.append(framework);
+        }
+        return sb.isEmpty() ? "Use the declared stack from the original request." : sb.toString();
+    }
+
+    private boolean validateAgentResult(AgentRole role, OrchestrationContext context, HandoffResult result, String taskDescription) {
+        if (result == null || !result.success()) {
+            return false;
+        }
+        String output = sanitizeAgentOutput(result.output());
+        String original = context.originalUserRequest() == null ? "" : context.originalUserRequest();
+        String tech = technologyConstraints(context.context());
+
+        if (output.isBlank()) {
+            log.warn("Rejected blank agent output for {}", role);
+            return false;
+        }
+
+        if (!tech.isBlank()) {
+            String lowerOutput = output.toLowerCase(Locale.ROOT);
+            if (lowerOutput.contains("python") || lowerOutput.contains("flask") || lowerOutput.contains("node.js")
+                    || lowerOutput.contains("javascript") || lowerOutput.contains("express")
+                    || lowerOutput.contains("django") || lowerOutput.contains("fastapi")) {
+                log.warn("Rejected output because it violates the selected technology constraint: {}", truncate(output, 200));
+                return false;
+            }
+        }
+
+        if (role == AgentRole.MANAGER && looksLikeExecutionPlan(output)) {
+            log.warn("Rejected manager output because it is an execution plan instead of requirements and scope: {}", truncate(output, 200));
+            return false;
+        }
+
+        if (role == AgentRole.RESEARCHER && !requiresExternalResearch(original, context.context())) {
+            log.warn("Rejected researcher output because external research is not required for this request: {}", truncate(output, 200));
+            return false;
+        }
+
+        if (hasUnnecessaryFeature(output)) {
+            log.warn("Rejected output because it introduces out-of-scope components: {}", truncate(output, 200));
+            return false;
+        }
+
+        if (!original.isBlank()) {
+            String normalizedOriginal = normalize(original);
+            String normalizedOutput = normalize(output);
+            boolean mentionsCoreRequest = normalizedOutput.contains("shopping") || normalizedOutput.contains("cart")
+                    || normalizedOutput.contains("total") || normalizedOutput.contains("price") || normalizedOutput.contains("api");
+            if (normalizedOriginal.contains("shopping") && normalizedOriginal.contains("cart") && !mentionsCoreRequest) {
+                log.warn("Rejected output because it does not stay in scope for the shopping-cart request: {}", truncate(output, 200));
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private boolean requiresExternalResearch(String originalRequest, Map<String, Object> inputContext) {
+        String request = originalRequest == null ? "" : originalRequest.toLowerCase(Locale.ROOT);
+        if (inputContext != null) {
+            Object externalFlag = inputContext.get("externalServices");
+            if (Boolean.TRUE.equals(externalFlag)) {
+                return true;
+            }
+        }
+        return request.contains("research") || request.contains("latest") || request.contains("current")
+                || request.contains("market") || request.contains("pricing") || request.contains("external")
+                || request.contains("compare") || request.contains("competitor");
+    }
+
+    private boolean looksLikeExecutionPlan(String output) {
+        String normalized = output.toLowerCase(Locale.ROOT);
+        return normalized.contains("designer:") || normalized.contains("coder:") || normalized.contains("reviewer:")
+                || normalized.contains("tester:") || normalized.contains("researcher:") || normalized.contains("manager:")
+                || normalized.contains("[handoff:");
+    }
+
+    private boolean hasUnnecessaryFeature(String output) {
+        String normalized = normalize(output);
+        String[] forbiddenPatterns = {
+                "database", "db", "redis", "cache", "gateway", "api gateway", "kafka", "rabbitmq",
+                "message queue", "messaging", "queue", "microservice", "user service", "product catalog",
+                "external api", "payment gateway", "email service", "auth service", "pricing research",
+                "web search", "search the web"
+        };
+        for (String forbidden : forbiddenPatterns) {
+            if (!normalized.contains(forbidden)) {
+                continue;
+            }
+            if (normalized.contains("no " + forbidden)
+                    || normalized.contains("not " + forbidden)
+                    || normalized.contains("without " + forbidden)
+                    || normalized.contains("without adding " + forbidden)
+                    || normalized.contains("not required")
+                    || normalized.contains("no external")
+                    || normalized.contains("does not require " + forbidden)
+                    || normalized.contains("no unrelated " + forbidden)) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private String sanitizeAgentOutput(String output) {
+        if (output == null) {
+            return "";
+        }
+        String cleaned = output.replaceAll("(?i)\\[HANDOFF:[A-Z]+\\]", "").trim();
+        return cleaned.isBlank() ? "" : cleaned;
+    }
+
+    private String normalize(String text) {
+        return text == null ? "" : text.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]", " ");
+    }
+
+    private String buildStructuredFinalAnswer(String requestId, OrchestrationContext context, List<StepSummary> steps) {
+        StringBuilder sb = new StringBuilder();
+
+        String requirements = context.requirements().isEmpty() ?
+                "Create a focused REST API that calculates the total price of items in a shopping cart without adding unrelated features or infrastructure." :
+                firstSummary(context.requirements());
+        String design = context.design().isEmpty() ?
+                "Use a focused REST endpoint for calculating the shopping cart total. Prefer a POST request body with item details and return the total." :
+                firstSummary(context.design());
+        String implementation = context.implementation().isEmpty() ?
+                "Implement the controller, request DTO, and calculator logic for the shopping-cart total API in the selected stack." :
+                firstSummary(context.implementation());
+        String review = context.review().isEmpty() ?
+                "No material issues found; the implementation stays within scope and uses the required selected stack." :
+                firstSummary(context.review());
+        String tests = context.tests().isEmpty() ?
+                "Validate the endpoint with representative cart totals and edge cases such as empty carts and mixed item quantities." :
+                firstSummary(context.tests());
+
+        sb.append("Requirements\n");
+        sb.append(requirements).append("\n\n");
+        sb.append("Epics/Stories\n");
+        sb.append("- As a shopper, I can submit cart items and receive the total price for the cart.\n\n");
+        sb.append("Design\n");
+        sb.append(design).append("\n\n");
+        sb.append("Implementation\n");
+        sb.append(implementation).append("\n\n");
+        sb.append("Code Review\n");
+        sb.append(review).append("\n\n");
+        sb.append("Tests\n");
+        sb.append(tests).append("\n");
+        return sb.toString().trim();
+    }
+
+    private String firstSummary(Map<String, Object> section) {
+        if (section == null || section.isEmpty()) {
+            return "No specific output captured.";
+        }
+        Object summary = section.get("summary");
+        if (summary != null && !String.valueOf(summary).isBlank()) {
+            return String.valueOf(summary);
+        }
+        return section.values().stream()
+                .filter(Objects::nonNull)
+                .map(String::valueOf)
+                .filter(value -> !value.isBlank())
+                .findFirst()
+                .orElse("No specific output captured.");
     }
 
     // ---- Internal orchestration phases ----

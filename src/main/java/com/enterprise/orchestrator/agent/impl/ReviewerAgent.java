@@ -24,9 +24,12 @@ public class ReviewerAgent implements BaseAgent {
     private static final Logger log = LoggerFactory.getLogger(ReviewerAgent.class);
 
     private static final String SYSTEM_PROMPT = """
-            You are a code and design reviewer. Given implementation artifacts,
-            provide concise findings, categorize by severity, and suggest fixes.
-            If the item needs changes, append the exact token [HANDOFF:CODER].
+            You are a strict code reviewer for the selected stack.
+            Review the actual implementation against the original request, scope, and
+            technology constraints. Identify real issues only; do not auto-approve.
+            If there are no material issues, say 'No material issues found.' Do not
+            invent unrelated problems or optional components. If changes are required,
+            append the exact token [HANDOFF:CODER].
             """;
 
     private static final List<McpTool> MCP_TOOLS = List.of(
@@ -56,11 +59,10 @@ public class ReviewerAgent implements BaseAgent {
         log.info("ReviewerAgent executing task: {}", task.id());
 
         String response = chatClient.prompt()
-                .user(task.description())
+                .user(buildPrompt(task))
                 .call()
                 .content();
 
-        // Log only the model response
         log.info(response == null ? "" : response);
 
         Map<String, Object> metadata = Map.of("review_output", response);
@@ -72,5 +74,17 @@ public class ReviewerAgent implements BaseAgent {
         }
 
         return HandoffResult.terminal(AgentRole.REVIEWER, response, metadata);
+    }
+
+    private String buildPrompt(Task task) {
+        Map<String, Object> context = task.context() == null ? Map.of() : task.context();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Original Request\n").append(context.getOrDefault("originalUserRequest", "")).append("\n\n");
+        sb.append("Context\n").append(context.getOrDefault("context", Map.of())).append("\n\n");
+        sb.append("Technology Constraints\n").append(context.getOrDefault("technologyConstraints", "Use the selected language and framework from the request context")).append("\n\n");
+        sb.append("Previous Relevant Outputs\n").append(context.getOrDefault("previousAgentOutputs", Map.of())).append("\n\n");
+        sb.append("Current Task\n").append(task.description()).append("\n\n");
+        sb.append("Expected Output\nReview only the feature under discussion and reject unrelated code or framework drift.");
+        return sb.toString();
     }
 }

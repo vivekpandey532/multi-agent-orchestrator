@@ -13,60 +13,50 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Worker agent specialized in system design, architecture diagrams,
- * and UI/UX recommendations.
- */
 @Component
-public class DesignerAgent implements BaseAgent {
+public class TesterAgent implements BaseAgent {
 
-    private static final Logger log = LoggerFactory.getLogger(DesignerAgent.class);
+    private static final Logger log = LoggerFactory.getLogger(TesterAgent.class);
 
     private static final String SYSTEM_PROMPT = """
-            You are a system designer for the selected stack. Produce only the design
-            needed for the original request. Keep scope tight: do not propose
-            databases, API gateways, caches, messaging, external services, or other
-            optional components unless the request explicitly requires them. For any
-            request-body operation, prefer POST, PUT, or PATCH over GET. Give practical
-            REST design decisions and endpoint shapes for the requested feature only.
+            You are an API quality tester for the selected stack. Validate actual implementation
+            details against the original request, requested behavior, and stack constraints. Do not
+            trust the previous agent's summary without checking for scope drift or stack violations.
+            Confirm that the result stays within the original request and does not introduce databases,
+            gateways, caches, messaging, or other optional components unless explicitly required.
             """;
 
     private static final List<McpTool> MCP_TOOLS = List.of(
-            new McpTool("diagram_generator", "Generate architecture diagrams from descriptions", "/mcp/tools/diagram-gen"),
-            new McpTool("design_patterns_db", "Look up applicable design patterns", "/mcp/tools/design-patterns")
+            new McpTool("test_runner", "Run unit and integration tests for the current implementation", "/mcp/tools/test-runner")
     );
 
     private final ChatClient chatClient;
 
-    public DesignerAgent(ChatClient.Builder chatClientBuilder) {
+    public TesterAgent(ChatClient.Builder chatClientBuilder) {
         this.chatClient = chatClientBuilder
                 .defaultSystem(SYSTEM_PROMPT)
                 .build();
     }
 
     @Override
-    public AgentRole role() { return AgentRole.DESIGNER; }
+    public AgentRole role() { return AgentRole.TESTER; }
 
     @Override
-    public String goal() { return "Produce architecture and design recommendations."; }
+    public String goal() { return "Validate implementation against the original request and technology constraints."; }
 
     @Override
     public List<McpTool> tools() { return MCP_TOOLS; }
 
     @Override
     public HandoffResult execute(Task task) {
-        log.info("DesignerAgent executing task: {}", task.id());
-
         String response = chatClient.prompt()
                 .user(buildPrompt(task))
                 .call()
                 .content();
 
-        // Log only the model response
         log.info(response == null ? "" : response);
-
-        return HandoffResult.terminal(AgentRole.DESIGNER, response,
-                Map.of("design_output", response));
+        return HandoffResult.terminal(AgentRole.TESTER, response,
+                Map.of("test_output", response));
     }
 
     private String buildPrompt(Task task) {
@@ -77,7 +67,7 @@ public class DesignerAgent implements BaseAgent {
         sb.append("Technology Constraints\n").append(context.getOrDefault("technologyConstraints", "Use the selected language and framework from the request context")).append("\n\n");
         sb.append("Previous Relevant Outputs\n").append(context.getOrDefault("previousAgentOutputs", Map.of())).append("\n\n");
         sb.append("Current Task\n").append(task.description()).append("\n\n");
-        sb.append("Expected Output\nProduce only the design needed for the original request and do not propose unrelated product, user, or framework changes.");
+        sb.append("Expected Output\nValidate and report whether the implementation addresses the original request, follows the selected stack, and stays within scope.");
         return sb.toString();
     }
 }

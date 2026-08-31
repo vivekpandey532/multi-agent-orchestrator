@@ -63,7 +63,6 @@ public class HistoryAgent implements BaseAgent {
                 .call()
                 .content();
 
-        // Log only the model response
         log.info(response == null ? "" : response);
 
         Map<String, Object> metadata = Map.of("history_output", response);
@@ -79,11 +78,14 @@ public class HistoryAgent implements BaseAgent {
     }
 
     private String buildPrompt(Task task) {
-        StringBuilder sb = new StringBuilder(task.description());
-        Object priorContext = task.context().get("user_request");
-        if (priorContext != null) {
-            sb.append("\n\nOriginal user request for additional context: ").append(priorContext);
-        }
+        Map<String, Object> context = task.context() == null ? Map.of() : task.context();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Original Request\n").append(context.getOrDefault("originalUserRequest", "")).append("\n\n");
+        sb.append("Context\n").append(context.getOrDefault("context", Map.of())).append("\n\n");
+        sb.append("Technology Constraints\n").append(context.getOrDefault("technologyConstraints", "Use the declared stack from the original request")).append("\n\n");
+        sb.append("Previous Relevant Outputs\n").append(context.getOrDefault("previousAgentOutputs", Map.of())).append("\n\n");
+        sb.append("Current Task\n").append(task.description()).append("\n\n");
+        sb.append("Expected Output\nProvide only context relevant to the original request; skip unrelated tasks.");
         return sb.toString();
     }
 }

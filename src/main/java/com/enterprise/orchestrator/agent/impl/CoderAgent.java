@@ -55,12 +55,12 @@ public class CoderAgent implements BaseAgent {
         log.info("CoderAgent executing task: {}", task.id());
 
         String response = chatClient.prompt()
-                .user(task.description())
+                .user(buildPrompt(task))
                 .call()
                 .content();
 
         // Log only the model response
-        log.info(response == null ? "" : response);
+        log.info("CoderAgent response:\n{}", response == null ? "" : response);
 
         Map<String, Object> metadata = Map.of("code_output", response);
 
@@ -71,5 +71,17 @@ public class CoderAgent implements BaseAgent {
         }
 
         return HandoffResult.terminal(AgentRole.CODER, response, metadata);
+    }
+
+    private String buildPrompt(Task task) {
+        Map<String, Object> context = task.context() == null ? Map.of() : task.context();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Original Request\n").append(context.getOrDefault("originalUserRequest", "")).append("\n\n");
+        sb.append("Context\n").append(context.getOrDefault("context", Map.of())).append("\n\n");
+        sb.append("Technology Constraints\n").append(context.getOrDefault("technologyConstraints", "Use the selected language and framework from the request context")).append("\n\n");
+        sb.append("Previous Relevant Outputs\n").append(context.getOrDefault("previousAgentOutputs", Map.of())).append("\n\n");
+        sb.append("Current Task\n").append(task.description()).append("\n\n");
+        sb.append("Expected Output\nImplement only the requested feature in the selected stack. Do not switch frameworks or add unrelated APIs.");
+        return sb.toString();
     }
 }

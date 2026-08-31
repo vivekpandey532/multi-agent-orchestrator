@@ -24,11 +24,12 @@ public class ResearcherAgent implements BaseAgent {
     private static final Logger log = LoggerFactory.getLogger(ResearcherAgent.class);
 
     private static final String SYSTEM_PROMPT = """
-            You are a research specialist. Given a task, gather factual context,
-            summarize relevant background, and provide citations or pointers where
-            appropriate. If the output suggests implementation work, append
-            the exact token [HANDOFF:CODER]. If it suggests architecture work,
-            append [HANDOFF:DESIGNER].
+            You are a research specialist. Only perform external research when the
+            request explicitly requires it. If the request does not require external
+            information, return 'No external research required for this request.' and
+            do not propose unrelated investigation. If you are asked to work on a
+            feature already defined, stay strictly in scope and do not introduce extra
+            infrastructure.
             """;
 
     private static final List<McpTool> MCP_TOOLS = List.of(
@@ -58,11 +59,10 @@ public class ResearcherAgent implements BaseAgent {
         log.info("ResearcherAgent executing task: {}", task.id());
 
         String response = chatClient.prompt()
-                .user(task.description())
+                .user(buildPrompt(task))
                 .call()
                 .content();
 
-        // Log only the model response
         log.info(response == null ? "" : response);
 
         Map<String, Object> metadata = Map.of("research_output", response);
@@ -79,5 +79,17 @@ public class ResearcherAgent implements BaseAgent {
         }
 
         return HandoffResult.terminal(AgentRole.RESEARCHER, response, metadata);
+    }
+
+    private String buildPrompt(Task task) {
+        Map<String, Object> context = task.context() == null ? Map.of() : task.context();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Original Request\n").append(context.getOrDefault("originalUserRequest", "")).append("\n\n");
+        sb.append("Context\n").append(context.getOrDefault("context", Map.of())).append("\n\n");
+        sb.append("Technology Constraints\n").append(context.getOrDefault("technologyConstraints", "Use the declared stack from the original request")).append("\n\n");
+        sb.append("Previous Relevant Outputs\n").append(context.getOrDefault("previousAgentOutputs", Map.of())).append("\n\n");
+        sb.append("Current Task\n").append(task.description()).append("\n\n");
+        sb.append("Expected Output\nProvide only context relevant to the original request. Skip unrelated research or off-scope topics.");
+        return sb.toString();
     }
 }

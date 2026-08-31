@@ -17,7 +17,7 @@ import org.springframework.context.annotation.Primary;
  * {@code orchestrator.ai.provider} property.
  * <p>
  * Supported values: {@code openai}, {@code ollama}, {@code anthropic}.
- * Only one provider is active at a time — Spring Boot auto-configures the
+ * Only one provider is active at a time — the framework auto-configures the
  * matching {@code ChatModel} bean, and this class wires it into a
  * {@code ChatClient.Builder} that all agents share.
  */
