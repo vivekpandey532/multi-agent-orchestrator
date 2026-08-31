@@ -25,8 +25,9 @@ class AgentOrchestratorTest {
     void setUp() {
         blackboard = new SharedBlackboard();
 
-        // Stub Manager: returns a fixed decomposition
-        BaseAgent manager = stubAgent(AgentRole.MANAGER, "HISTORY: Research the topic\nDESIGNER: Create architecture");
+        // Stub Manager: returns scope and requirements instead of an execution plan
+        BaseAgent manager = stubAgent(AgentRole.MANAGER,
+                "Requirements: Build a dashboard in the selected stack with focused analytics views. No external research required.");
         // Stub History: returns terminal result
         BaseAgent history = stubAgent(AgentRole.HISTORY, "Historical context gathered.");
         // Stub Designer: returns terminal result
@@ -80,7 +81,7 @@ class AgentOrchestratorTest {
             }
         };
 
-        BaseAgent manager = stubAgent(AgentRole.MANAGER, "HISTORY: Research topic");
+        BaseAgent manager = stubAgent(AgentRole.MANAGER, "Requirements: Test handoff requires a focused design and implementation flow. No external research required.");
         BaseAgent designer = stubAgent(AgentRole.DESIGNER, "Design complete after handoff.");
 
         AgentOrchestrator chainOrchestrator = new AgentOrchestrator(
@@ -99,7 +100,7 @@ class AgentOrchestratorTest {
     @Test
     void orchestrate_missingAgentThrows() {
         // Only register Manager — no workers
-        BaseAgent manager = stubAgent(AgentRole.MANAGER, "HISTORY: Do something");
+        BaseAgent manager = stubAgent(AgentRole.MANAGER, "Requirements: Build a focused feature with clear scope and the selected stack. No external research required.");
 
         AgentOrchestrator incomplete = new AgentOrchestrator(
                 List.of(manager),
@@ -110,6 +111,64 @@ class AgentOrchestratorTest {
 
         assertThrows(AgentOrchestrator.OrchestratorException.class,
                 () -> incomplete.orchestrate(new OrchestrationRequest("test", Map.of())));
+    }
+
+    @Test
+    void orchestrate_keepsOriginalRequestAndTechnologyConstraints() {
+        BaseAgent manager = stubAgent(AgentRole.MANAGER, "Requirements: Create a REST API in the selected stack to calculate the total price of items in a shopping cart. No database, gateway, cache, or unrelated features are required.");
+        BaseAgent designer = stubAgent(AgentRole.DESIGNER, "Design a REST endpoint for the shopping cart total API using a POST request body and response total.");
+        BaseAgent coder = stubAgent(AgentRole.CODER, "Implement the shopping cart total API in the selected stack.");
+        BaseAgent reviewer = stubAgent(AgentRole.REVIEWER, "No material issues found for the shopping cart total API.");
+        BaseAgent tester = stubAgent(AgentRole.TESTER, "Validated: selected stack, shopping cart total API only; endpoint behavior confirmed.");
+
+        AgentOrchestrator constrained = new AgentOrchestrator(
+                List.of(manager, designer, coder, reviewer, tester),
+                new SharedBlackboard(),
+                Executors.newVirtualThreadPerTaskExecutor(),
+                new OrchestratorProperties(10, 30, 5),
+                new SimpleMeterRegistry());
+
+        OrchestrationRequest request = new OrchestrationRequest(
+                "Create a REST API to calculate the total price of items in a shopping cart.",
+                Map.of("technology", "Selected backend language", "framework", "Selected web framework"));
+
+        OrchestrationResponse response = constrained.orchestrate(request);
+
+        assertFalse(response.finalAnswer().contains("Python"));
+        assertTrue(response.finalAnswer().contains("shopping cart"));
+        assertTrue(response.blackboardSnapshot().containsKey("originalUserRequest"));
+        assertTrue(response.blackboardSnapshot().containsKey("technologyConstraints"));
+    }
+
+    @Test
+    void orchestrate_rejectsTechnologyDrift() {
+        BaseAgent manager = stubAgent(AgentRole.MANAGER, "Requirements: Create a REST API in the selected stack to calculate the total price of items in a shopping cart. No database, gateway, cache, or unrelated features are required.");
+        BaseAgent designer = stubAgent(AgentRole.DESIGNER, "Design a REST endpoint for the shopping cart total API using a POST request body and response total.");
+        BaseAgent coder = new BaseAgent() {
+            @Override public AgentRole role() { return AgentRole.CODER; }
+            @Override public String goal() { return "test"; }
+            @Override public List<McpTool> tools() { return List.of(); }
+            @Override public HandoffResult execute(Task task) {
+                return HandoffResult.terminal(AgentRole.CODER,
+                        "Python Flask implementation for a user service and product catalog instead of the Java shopping cart API.",
+                        Map.of());
+            }
+        };
+        BaseAgent reviewer = stubAgent(AgentRole.REVIEWER, "Review complete.");
+        BaseAgent tester = stubAgent(AgentRole.TESTER, "Validation complete.");
+
+        AgentOrchestrator drifted = new AgentOrchestrator(
+                List.of(manager, designer, coder, reviewer, tester),
+                new SharedBlackboard(),
+                Executors.newVirtualThreadPerTaskExecutor(),
+                new OrchestratorProperties(10, 30, 5),
+                new SimpleMeterRegistry());
+
+        OrchestrationRequest request = new OrchestrationRequest(
+                "Create a REST API to calculate the total price of items in a shopping cart.",
+                Map.of("technology", "Selected backend language", "framework", "Selected web framework"));
+
+        assertThrows(AgentOrchestrator.OrchestratorException.class, () -> drifted.orchestrate(request));
     }
 
     private static BaseAgent stubAgent(AgentRole role, String fixedOutput) {
